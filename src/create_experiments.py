@@ -147,7 +147,7 @@ def make_haven(agent_type: Literal["dqn", "ppo"], ir: bool):
                 qnetwork=marl.nn.model_bank.qnetworks.QCNN(
                     input_shape=meta_env.observation_shape,
                     extras_size=meta_env.extras_shape[0],
-                    output=N_SUBGOALS,
+                    output_shape=N_SUBGOALS,
                 ),
                 train_policy=marl.policy.EpsilonGreedy.linear(1.0, 0.05, 200_000),
                 memory=marl.models.TransitionMemory(5_000),
@@ -271,48 +271,6 @@ def make_dqn(
     )
 
 
-def make_recurrent_dqn(
-    env: MARLEnv[MultiDiscreteSpace],
-    mixing: Optional[Literal["vdn", "qmix", "qplex"]] = "vdn",
-    gamma: float = 0.95,
-    noisy: bool = False,
-    use_vbe: bool = False,
-    memory: Optional[ReplayMemory[Any]] = None,):
-    mixer = make_mixer(env, mixing)
-    if len(env.observation_shape) == 1:
-        qnetwork = marl.nn.model_bank.RCNN.from_env(env)
-    elif len(env.observation_shape) == 3:
-        qnetwork = marl.nn.model_bank.RCNN.from_env(env)
-    else:
-        raise NotImplementedError(f"Observation shape {env.observation_shape} not supported")
-    ir = None
-    if noisy:
-        policy = marl.policy.ArgMax()
-    else:
-        policy = marl.policy.EpsilonGreedy.linear(1.0, 0.05, n_steps=200_000)
-    vbe = None
-    if use_vbe:
-        vbe = VBE(gamma, deepcopy(qnetwork), 8, 1e-4)
-    if memory is None:
-        memory = marl.models.EpisodeMemory(5000)
-    return DQN(
-        qnetwork=qnetwork,
-        train_policy=policy,
-        memory=memory,
-        optimiser_type="adam",
-        double_qlearning=True,
-        target_updater=SoftUpdate(0.01),
-        lr=5e-4,
-        batch_size=16,
-        train_interval=(1, "episode"),
-        gamma=gamma,
-        mixer=mixer,
-        grad_norm_clipping=10,
-        ir_module=ir,
-        vbe=vbe,
-    )  
-
-
 def make_mappo(env: MARLEnv, mixing: Literal["vdn", "qmix", "qplex"] | None = "vdn"):
     match env.observation_shape:
         case (c, h, w):
@@ -360,17 +318,56 @@ def make_overcooked():
     return env, test_env
 
 
-def make_partial_obs():
-    env = LLE.level(6).obs_type("partial7x7").state_type("state").build()
-    env = marlenv.Builder(env).agent_id().time_limit(78).build()
-    return env, None
+def make_recurrent_dqn(
+    env: MARLEnv[MultiDiscreteSpace],
+    mixing: Optional[Literal["vdn", "qmix", "qplex"]] = "vdn",
+    gamma: float = 0.95,
+    noisy: bool = False,
+    use_vbe: bool = False,
+    memory: Optional[ReplayMemory[Any]] = None,):
+    mixer = make_mixer(env, mixing)
+    if len(env.observation_shape) == 1:
+        qnetwork = marl.nn.model_bank.RCNN.from_env(env)
+    elif len(env.observation_shape) == 3:
+        qnetwork = marl.nn.model_bank.RCNN.from_env(env)
+    else:
+        raise NotImplementedError(f"Observation shape {env.observation_shape} not supported")
+    ir = None
+    if noisy:
+        policy = marl.policy.ArgMax()
+    else:
+        policy = marl.policy.EpsilonGreedy.linear(1.0, 0.05, n_steps=200_000)
+    vbe = None
+    if use_vbe:
+        vbe = VBE(gamma, deepcopy(qnetwork), 8, 1e-4)
+    if memory is None:
+        memory = marl.models.EpisodeMemory(5000)
+    return DQN(
+        qnetwork=qnetwork,
+        train_policy=policy,
+        memory=memory,
+        optimiser_type="adam",
+        double_qlearning=True,
+        target_updater=SoftUpdate(0.01),
+        lr=5e-4,
+        batch_size=16,
+        train_interval=(1, "episode"),
+        gamma=gamma,
+        mixer=mixer,
+        grad_norm_clipping=10,
+        ir_module=ir,
+        vbe=vbe,
+    )  
 
+def make_partial_obs():
+    env = LLE.from_file("/workspaces/marl/maps/lvl7").obs_type("partial7x7").state_type("state").build()
+    env = marlenv.Builder(env).agent_id().time_limit(156).build()
+    return env, None
 
 def main(args: Arguments):
     try:
-        # env, test_env = make_lle()
         env, test_env = make_partial_obs()
-        trainer = make_recurrent_dqn(env, mixing="qmix", gamma=0.95, memory=None)
+        trainer = make_dqn(env, mixing="qmix", gamma=0.95, memory=None)
         exp = marl.Experiment.create(
             logdir=args.logdir,
             trainer=trainer,

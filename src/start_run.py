@@ -71,7 +71,7 @@ def main(args: Arguments):
     experiment.run(
         args.seeds,
         fill_strategy=args.gpu_strategy,
-        quiet=True,
+        quiet=False,
         device=args.device,
         n_tests=args.n_tests,
         render_tests=args.render,

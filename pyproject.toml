@@ -10,7 +10,7 @@ dependencies = [
   "laser-learning-environment>=2.6",
   "matplotlib>=3.10.8",
   "mplcursors>=0.6",
-  "multi-agent-rlenv>=4.0.0",
+  "multi-agent-rlenv<4.3.0",
   "neptune>=1.14.0",
   "numpy>=2.0",
   "orjson>=3.10.12",
