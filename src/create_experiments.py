@@ -364,7 +364,7 @@ def main(args: Arguments):
     try:
         # env, test_env = make_lle()
         env, test_env = make_partial_obs()
-        env = marl.env.LLEConfig(6, obs_type="layered", state_type="state")
+        env = marl.env.LLEConfig(6, obs_type="partial7x7", state_type="state")
         trainer = make_recurrent_dqn(env, mixing="qmix", gamma=0.95, memory=None)
         exp = marl.Experiment(
             logdir=args.logdir,
