@@ -5,42 +5,66 @@ import torch
 import marl
 import logging
 import dotenv
+
+from marl import ReplayMemory
+from marl.algos.dqn import DQN, SoftUpdate
 from marlenv import MARLEnv, MultiDiscreteSpace
-from marl.nn.model_bank import qnetworks
-from typing import cast, Literal, Any
-import lle
+from typing import Any, Literal, Optional, cast
+from lle import LLE
 import os
+from create_experiments import make_mixer
 
 N_STEPS = 1_000_000
-SHAPING = False
+ 
+def suggest_recurrent_dqn(trial: optuna.Trial,
+    env: MARLEnv[MultiDiscreteSpace],
+    mixing: Optional[Literal["vdn", "qmix"]] = "vdn",
+    gamma: float = 0.95,
+    noisy: bool = False,
+    use_vbe: bool = False,
+    memory: Optional[ReplayMemory[Any]] = None,):
+    mixer = make_mixer(env, mixing)
+    if len(env.observation_shape) == 1:
+        # marl.training.DQN(mixer=marl.nn.mixers.VDN.from_env(env), **dqn_params)
+        qnetwork = marl.nn.model_bank.qnetworks.QCRNN.from_env(env)
+    elif len(env.observation_shape) == 3:
+        # marl.training.DQN(mixer=marl.nn.mixers.VDN.from_env(env), **dqn_params)
+        qnetwork = marl.nn.model_bank.qnetworks.QCRNN.from_env(env)
+    else:
+        raise NotImplementedError(f"Observation shape {env.observation_shape} not supported")
+    ir = None
+    if noisy:
+        policy = marl.policy.ArgMax()
+    else:
+        policy = marl.policy.EpsilonGreedy.linear(1.0, 0.05, n_steps=200_000)
+    return DQN(
+        qnetwork=qnetwork,
+        train_policy=policy,
+        memory_size=5000,
+        optimiser_type="adam",
+        double_qlearning=True,
+        target_updater=SoftUpdate(0.01),
+        lr=5e-4,
+        batch_size=16,
+        train_interval=(1, "episode"),
+        gamma=gamma,
+        mixer=mixer,
+        grad_norm_clipping=10,
+        ir_module=ir,
+        vbe=None,
+    )  
 
 
-def objective(trial: optuna.Trial, algo: Literal["vdn", "qmix", "qplex", "maven", "mappo"]):
-    env = lle.level(6).obs_type("layered").state_type("state")
-    if SHAPING:
-        env = env.pbrs(gamma=1.0, reward_value=1.0, lasers_to_reward=[(4, 0), (6, 12)])
-    env = env.builder().agent_id().time_limit(78).build()
-    match algo:
-        case "vdn":
-            dqn_params = suggest_dqn(trial, env)
-            trainer = marl.training.DQN(mixer=marl.nn.mixers.VDN.from_env(env), **dqn_params)
-        case "qmix":
-            dqn_params = suggest_dqn(trial, env)
-            trainer = marl.training.DQN(mixer=marl.nn.mixers.QMix.from_env(env), **dqn_params)
-        case "qplex":
-            dqn_params = suggest_dqn(trial, env)
-            trainer = marl.training.DQN(mixer=marl.nn.mixers.QPlex.from_env(env), **dqn_params)
-        case other:
-            raise NotImplementedError(f"Algorithm {other} not implemented yet.")
-    exp = marl.Experiment.create(
+def objective(trial: optuna.Trial, algo: Literal["vdn", "qmix"], obs: Literal["layered", "partial3x3", "partial5x5", "partial7x7"] = "layered"):
+    
+    env = marl.env.LLEConfig(6, obs_type=obs, state_type="state")
+    trainer = suggest_recurrent_dqn(trial, env, algo)
+
+    exp = marl.Experiment(
         env,
         n_steps=N_STEPS,
         trainer=trainer,
-        save_weights=False,
-        save_actions=False,
-        test_interval=N_STEPS,
         logdir=os.path.join("logs", f"optuna-{algo}-{trial.number}"),
-        replace_if_exists=True,
     )
     exp.run(4, "scatter", quiet=True, n_parallel=4, n_tests=30, device=trial.number % torch.cuda.device_count())
     result = exp.get_experiment_results()
@@ -58,20 +82,11 @@ def suggest_dqn(trial: optuna.Trial, env: MARLEnv[MultiDiscreteSpace]) -> dict[s
     epsilon_decay = trial.suggest_int("epsilon_decay", 1000, 500_000, step=1000)
     grad_norm_clipping = trial.suggest_float("grad_norm_clipping", 0.5, 50.0, step=0.5)
     memory_size = trial.suggest_int("memory_size", 5_000, 100_000, step=5_000)
-    optimizer_type = trial.suggest_categorical("optimizer_type", ["adam", "rmsprop"])
     double_qlearning = trial.suggest_categorical("double_qlearning", [True, False])
     update_type = trial.suggest_categorical("update_type", ["soft", "hard"])
-    mlp_size_1 = trial.suggest_int("mlp_size_1", 64, 512, step=64)
-    mlp_size_2 = trial.suggest_int("mlp_size_2", 64, 512, step=64)
-    if update_type == "soft":
-        tau = trial.suggest_float("tau", 1e-3, 1e-1, log=True)
-        target_updater = marl.training.qtarget_updater.SoftUpdate(tau)
-    else:
-        target_update_interval = trial.suggest_int("target_update_interval", 50, 1_000, step=50)
-        target_updater = marl.training.qtarget_updater.HardUpdate(target_update_interval)
 
     return dict(
-        qnetwork=qnetworks.QCNN.from_env(env, mlp_sizes=(mlp_size_1, mlp_size_2)),
+        qnetwork= marl.nn.model_bank.qnetworks.QCNN.from_env(env, mlp_sizes=(mlp_size_1, mlp_size_2)),
         train_policy=marl.policy.EpsilonGreedy.linear(epsilon_start, epsilon_end, epsilon_decay),
         memory=marl.models.TransitionMemory(memory_size),
         optimiser_type=cast(Literal["adam", "rmsprop"], optimizer_type),
@@ -93,17 +108,15 @@ if __name__ == "__main__":
         level=log_level,
         format="%(asctime)s - %(levelname)s - %(message)s",
     )
-    for algo in ("vdn", "qmix"):
+    for algo in ('vdn', 'qmix'):
         try:
             study = optuna.create_study(
                 direction="maximize",
-                study_name=f"{algo.upper()} - {'shaping' if SHAPING else 'no shaping'}",
+                study_name=f"{algo.upper()} - {'no shaping'}",
                 storage=JournalStorage(JournalFileBackend("optuna_study.journal")),
                 load_if_exists=True,
             )
-            n_trials = 24
-            if algo == "vdn":
-                n_trials = 18
+            n_trials = 5
             study.optimize(lambda trial: objective(trial, algo=algo), n_trials=n_trials, n_jobs=8)
         except KeyboardInterrupt:
             pass
