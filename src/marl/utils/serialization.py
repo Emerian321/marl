@@ -82,9 +82,9 @@ class Serializable:
         return cls.from_dict(d)
 
     def to_json(self, *, beautify: bool = False):
-        option = None
+        option = orjson.OPT_SERIALIZE_NUMPY
         if beautify:
-            option = orjson.OPT_INDENT_2
+            option = option | orjson.OPT_INDENT_2
         return orjson.dumps(self.to_dict(), option=option, default=default_serialization)
 
     @classmethod
